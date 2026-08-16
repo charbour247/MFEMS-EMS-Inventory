@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>EMS Supply Inventory</title>
+<title>MFEMS Inventory Manager</title>
 <style>
 :root{--navy:#071a2f;--navy2:#0b2947;--blue:#2b8de0;--bg:#06182b;--card:#0d2945;--card2:#103453;--text:#f3f7fb;--muted:#a9bac9;--danger:#ff6b6b;--warn:#ffc857;--ok:#54d17a;--border:#214563}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
@@ -117,11 +117,7 @@ label{display:block;font-size:13px;font-weight:700;margin:14px 0 7px}input,selec
         </div>
 
         <div class="card"><h3>Google Sheets Database</h3>
-          <p class="muted">Connect this app to a Google Sheet through a deployed Google Apps Script web app.</p>
-          <label>Apps Script Web App URL</label>
-          <input id="gsEndpoint" placeholder="https://script.google.com/macros/s/.../exec">
-          <label>Spreadsheet ID</label>
-          <input id="gsSheetId" placeholder="Google Sheet ID">
+          <p class="muted">The Apps Script web app and spreadsheet are configured automatically in the application code.</p>
           <label>Inventory Tab Name</label>
           <input id="gsInventoryTab" value="Inventory">
           <label>Users Tab Name</label>
@@ -179,8 +175,17 @@ let currentSessionUser = null;
 let qrScanner = null;
 let scanLocked = false;
 
-let gsSettings = JSON.parse(localStorage.getItem("emsGoogleSheets")||"null") || {
-  enabled:false, endpoint:"", sheetId:"", inventoryTab:"Inventory", usersTab:"Users"
+const GOOGLE_SHEETS_CONFIG = Object.freeze({
+  endpoint:"https://script.google.com/macros/s/AKfycbweLXqnd84CiraMH2rpa8TpCzUPIgYAw6MSwMRUDbZRv3YZWlTfCv2c32NITiB4Aekn/exec",
+  sheetId:"1HNm7G6D82PjMFFK1AjRqp57Sfc_SnCuWuIj0dT15vu0"
+});
+const savedGoogleSheetsSettings = JSON.parse(localStorage.getItem("emsGoogleSheets")||"null") || {};
+let gsSettings = {
+  enabled:savedGoogleSheetsSettings.enabled ?? true,
+  endpoint:GOOGLE_SHEETS_CONFIG.endpoint,
+  sheetId:GOOGLE_SHEETS_CONFIG.sheetId,
+  inventoryTab:savedGoogleSheetsSettings.inventoryTab||"Inventory",
+  usersTab:savedGoogleSheetsSettings.usersTab||"Users"
 };
 
 if(!users.length){
@@ -210,9 +215,7 @@ async function login(){
 }
 
 function loadGoogleSheetsSettingsUI(){
-  if(!document.getElementById("gsEndpoint")) return;
-  document.getElementById("gsEndpoint").value=gsSettings.endpoint||"";
-  document.getElementById("gsSheetId").value=gsSettings.sheetId||"";
+  if(!document.getElementById("gsInventoryTab")) return;
   document.getElementById("gsInventoryTab").value=gsSettings.inventoryTab||"Inventory";
   document.getElementById("gsUsersTab").value=gsSettings.usersTab||"Users";
   document.getElementById("gsEnabled").checked=!!gsSettings.enabled;
@@ -221,8 +224,8 @@ function loadGoogleSheetsSettingsUI(){
 function saveGoogleSheetsSettings(){
   gsSettings={
     enabled:document.getElementById("gsEnabled").checked,
-    endpoint:document.getElementById("gsEndpoint").value.trim(),
-    sheetId:document.getElementById("gsSheetId").value.trim(),
+    endpoint:GOOGLE_SHEETS_CONFIG.endpoint,
+    sheetId:GOOGLE_SHEETS_CONFIG.sheetId,
     inventoryTab:document.getElementById("gsInventoryTab").value.trim()||"Inventory",
     usersTab:document.getElementById("gsUsersTab").value.trim()||"Users"
   };
