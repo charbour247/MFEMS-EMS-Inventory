@@ -87,6 +87,7 @@ label{display:block;font-size:13px;font-weight:700;margin:14px 0 7px}input,selec
   <main class="main">
     <div class="topbar"><h2 id="pageTitle">Dashboard</h2><div class="user-chip">● <span id="currentUser">Admin</span></div></div>
 
+    <p id="syncStatus" class="muted" role="status" aria-live="polite"></p>
     <section id="dashboard" class="page">
       <div class="grid">
         <div class="stat"><small>Total Items</small><strong id="totalItems">0</strong></div>
@@ -164,12 +165,13 @@ const seed=[
 {name:"Oxygen Mask - Adult",cat:"Airway",loc:"Medic 2",qty:22,par:15,used:55,barcode:"EMS-100007"},
 {name:"Adhesive Tape",cat:"Dressings",loc:"Supply Room",qty:35,par:30,used:49,barcode:"EMS-100008"}
 ];
-let inventory=JSON.parse(localStorage.getItem("emsInventory")||"null")||seed;
-if(!localStorage.getItem("emsCredentialMigration")){
-  localStorage.removeItem("emsUsers");
-  localStorage.setItem("emsCredentialMigration","complete");
+function readLocal(key,fallback){
+  try{return JSON.parse(localStorage.getItem(key))??fallback;}catch(e){return fallback;}
 }
-let users=JSON.parse(localStorage.getItem("emsUsers")||"[]");
+let inventory=readLocal("emsInventory",seed);
+let users=readLocal("emsUsers",[]);
+if(!Array.isArray(inventory)) inventory=structuredClone(seed);
+if(!Array.isArray(users)) users=[];
 
 let currentSessionUser = null;
 let qrScanner = null;
@@ -179,7 +181,7 @@ const GOOGLE_SHEETS_CONFIG = Object.freeze({
   endpoint:"https://script.google.com/macros/s/AKfycbweLXqnd84CiraMH2rpa8TpCzUPIgYAw6MSwMRUDbZRv3YZWlTfCv2c32NITiB4Aekn/exec",
   sheetId:"1HNm7G6D82PjMFFK1AjRqp57Sfc_SnCuWuIj0dT15vu0"
 });
-const savedGoogleSheetsSettings = JSON.parse(localStorage.getItem("emsGoogleSheets")||"null") || {};
+const savedGoogleSheetsSettings = readLocal("emsGoogleSheets",{});
 let gsSettings = {
   enabled:savedGoogleSheetsSettings.enabled ?? true,
   endpoint:GOOGLE_SHEETS_CONFIG.endpoint,
@@ -188,18 +190,50 @@ let gsSettings = {
   usersTab:savedGoogleSheetsSettings.usersTab||"Users"
 };
 
+function cacheKey(){return "emsCache:v1:"+JSON.stringify([gsSettings.endpoint,gsSettings.sheetId,gsSettings.inventoryTab,gsSettings.usersTab]);}
+let cache=readLocal(cacheKey(),null);
+if(!cache || !Array.isArray(cache.inventory) || !Array.isArray(cache.users)){
+  cache={inventory,users,pending:{},lastSync:null};
+}
+inventory=cache.inventory;
+users=cache.users;
+let pending=cache.pending||{};
+let lastSync=cache.lastSync;
+let syncPromise=null;
+let storageAvailable=true;
+function setSyncStatus(message){
+  const suffix=storageAvailable?"":" Device storage unavailable; keep this page open until synced.";
+  document.getElementById("syncStatus").textContent=message+suffix;
+  document.getElementById("gsStatus").textContent=message+suffix;
+}
+function persistCache(){
+  try{
+    localStorage.setItem(cacheKey(),JSON.stringify({inventory,users,pending,lastSync}));
+    storageAvailable=true;
+  }catch(e){storageAvailable=false;setSyncStatus("Unable to save data on this device.");}
+}
+persistCache();
+
 if(!users.length){
   document.getElementById("loginButton").textContent="Create Admin Account";
   document.getElementById("authHint").textContent="First-time setup: choose your administrator credentials.";
 }
 
 async function login(){
+  if(gsSettings.enabled && !users.length){
+    document.getElementById("authHint").textContent="Checking Google Sheets for existing accounts...";
+    if(!await syncFromGoogleSheets(true)){
+      document.getElementById("authHint").textContent=document.getElementById("syncStatus").textContent;
+      return;
+    }
+  }
   const u=document.getElementById("username").value.trim();
   const p=document.getElementById("password").value;
   if(!users.length){
     if(!u || p.length<8){alert("Choose a username and a password of at least 8 characters.");return;}
     users=[{name:u,username:u,password:p,role:"Administrator",status:"Active"}];
-    localStorage.setItem("emsUsers",JSON.stringify(users));
+    pending.users=true;
+    persistCache();
   }
   const match=users.find(x=>(x.username||x.name.toLowerCase())===u && x.password===p && x.status==="Active");
   if(!match){ alert("Invalid username or password."); return; }
@@ -209,9 +243,11 @@ async function login(){
   document.getElementById("login").classList.add("hidden");
   document.getElementById("app").classList.remove("hidden");
   loadGoogleSheetsSettingsUI();
-  if(gsSettings.enabled) await syncFromGoogleSheets(true);
   applyRolePermissions();
   renderAll();
+  renderInventory();
+  setSyncStatus(lastSync?"Showing device data. Last synced: "+new Date(lastSync).toLocaleString():"Showing device data.");
+  if(gsSettings.enabled) void syncFromGoogleSheets(true);
 }
 
 function loadGoogleSheetsSettingsUI(){
@@ -222,6 +258,9 @@ function loadGoogleSheetsSettingsUI(){
   document.getElementById("gsStatus").textContent=gsSettings.enabled?"Google Sheets database enabled":"Not connected";
 }
 function saveGoogleSheetsSettings(){
+  const oldKey=cacheKey();
+  const changingTabs=(document.getElementById("gsInventoryTab").value.trim()||"Inventory")!==gsSettings.inventoryTab || (document.getElementById("gsUsersTab").value.trim()||"Users")!==gsSettings.usersTab;
+  if(syncPromise || (changingTabs && (pending.inventory || pending.users))){toast("Sync pending changes before changing the connection.");return;}
   gsSettings={
     enabled:document.getElementById("gsEnabled").checked,
     endpoint:GOOGLE_SHEETS_CONFIG.endpoint,
@@ -229,12 +268,25 @@ function saveGoogleSheetsSettings(){
     inventoryTab:document.getElementById("gsInventoryTab").value.trim()||"Inventory",
     usersTab:document.getElementById("gsUsersTab").value.trim()||"Users"
   };
-  localStorage.setItem("emsGoogleSheets",JSON.stringify(gsSettings));
+  try{localStorage.setItem("emsGoogleSheets",JSON.stringify(gsSettings));}catch(e){toast("Connection settings could not be saved on this device");}
+  if(oldKey!==cacheKey()){
+  cache=readLocal(cacheKey(),{inventory:[],users:[],pending:{},lastSync:null});
+  inventory=Array.isArray(cache.inventory)?cache.inventory:[];
+  users=Array.isArray(cache.users)?cache.users:[];
+  pending=cache.pending||{};
+  lastSync=cache.lastSync;
+  }
+  renderAll();renderInventory();renderUsers();
   loadGoogleSheetsSettingsUI(); toast("Google Sheets settings saved");
+  if(gsSettings.enabled) void syncFromGoogleSheets(true);
 }
 async function gsRequest(action,payload={}){
   if(!gsSettings.endpoint) throw new Error("Apps Script Web App URL is not configured.");
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),30000);
+  try{
   const response=await fetch(gsSettings.endpoint,{
+    signal:controller.signal,
     method:"POST",
     headers:{"Content-Type":"text/plain;charset=utf-8"},
     body:JSON.stringify({
@@ -249,23 +301,71 @@ async function gsRequest(action,payload={}){
   const data=await response.json();
   if(data.ok===false) throw new Error(data.error||"Google Sheets operation failed.");
   return data;
+  }finally{clearTimeout(timeout);}
 }
-async function syncFromGoogleSheets(silent=false){
-  try{
-    const data=await gsRequest("getData");
-    if(Array.isArray(data.inventory)) inventory=data.inventory;
-    if(Array.isArray(data.users)) users=data.users;
-    localStorage.setItem("emsInventory",JSON.stringify(inventory));
-    localStorage.setItem("emsUsers",JSON.stringify(users));
-    renderAll(); renderInventory(); renderUsers();
-    if(document.getElementById("gsStatus")) document.getElementById("gsStatus").textContent="Connected — last sync successful";
-    if(!silent) toast("Synced from Google Sheets");
-    return true;
-  }catch(err){
-    if(document.getElementById("gsStatus")) document.getElementById("gsStatus").textContent="Connection error: "+err.message;
-    if(!silent) alert(err.message);
-    return false;
-  }
+function syncFromGoogleSheets(silent=false){
+  if(!gsSettings.enabled){setSyncStatus("Google Sheets sync disabled; using device data.");return Promise.resolve(false);}
+  if(syncPromise) return syncPromise;
+  syncPromise=(async()=>{
+    try{
+      setSyncStatus("Syncing with Google Sheets...");
+      // Fetch first: a failed upload must not block unrelated server updates.
+      const initial=await gsRequest("getData");
+      applyServerData(initial);
+      if(!pending.inventory && !pending.users){
+        lastSync=new Date().toISOString();
+        persistCache();
+        setSyncStatus("Synced with Google Sheets: "+new Date(lastSync).toLocaleString());
+        if(!silent) toast("Synced from Google Sheets");
+        return true;
+      }
+      // Serialize uploads and downloads. Edits made during a request stay pending.
+      const uploadErrors=[];
+      while(true){
+        for(const kind of ["inventory","users"]){
+          while(pending[kind]){
+            const snapshot=JSON.stringify(kind==="inventory"?inventory:users);
+            try{
+              await gsRequest(kind==="inventory"?"saveInventory":"saveUsers",{[kind]:JSON.parse(snapshot)});
+            }catch(err){uploadErrors.push(kind+": "+err.message);break;}
+            if(snapshot===JSON.stringify(kind==="inventory"?inventory:users)){
+              delete pending[kind];
+              persistCache();
+            }
+          }
+        }
+        if(uploadErrors.length){
+          setSyncStatus("Downloaded available Google Sheets data. Local changes still waiting to upload: "+uploadErrors.join("; "));
+          return false;
+        }
+        const data=await gsRequest("getData");
+        applyServerData(data);
+        // Never replace a local edit with a response requested before that edit.
+        if(pending.inventory || pending.users) continue;
+        lastSync=new Date().toISOString();
+        persistCache();
+        renderAll();renderInventory();renderUsers();
+        setSyncStatus("Synced with Google Sheets: "+new Date(lastSync).toLocaleString());
+        if(!silent) toast("Synced from Google Sheets");
+        return true;
+      }
+    }catch(err){
+      const waiting=pending.inventory||pending.users;
+      setSyncStatus((waiting?"Changes waiting to sync. ":"Showing device data. ")+"Google Sheets unavailable; will retry. "+err.message);
+      if(!silent) toast("Sync failed; device data retained");
+      return false;
+    }finally{syncPromise=null;}
+  })();
+  return syncPromise;
+}
+function applyServerData(data){
+  if(!data || (!Array.isArray(data.inventory) && !Array.isArray(data.users))) throw new Error("Apps Script returned no inventory or users arrays.");
+  if(Array.isArray(data.inventory) && !pending.inventory) inventory=data.inventory;
+  if(Array.isArray(data.users) && !pending.users) users=data.users;
+  persistCache();
+  renderAll();renderInventory();renderUsers();
+  document.getElementById("loginButton").textContent=users.length?"Sign In":"Create Admin Account";
+  document.getElementById("authHint").textContent=users.length?"":"First-time setup: choose your administrator credentials.";
 }
 async function testGoogleSheets(){
   saveGoogleSheetsSettings();
@@ -278,21 +378,25 @@ async function testGoogleSheets(){
     alert(err.message);
   }
 }
-async function saveInventoryToDatabase(){
-  localStorage.setItem("emsInventory",JSON.stringify(inventory));
-  if(gsSettings.enabled){
-    try{await gsRequest("saveInventory",{inventory})}
-    catch(err){console.error(err);toast("Saved locally; Google Sheets sync failed")}
-  }
+function saveInventoryToDatabase(){
+  pending.inventory=true;
+  persistCache();
+  setSyncStatus("Changes saved on device; waiting to sync.");
+  if(gsSettings.enabled) void syncFromGoogleSheets(true);
 }
-async function saveUsersToDatabase(){
-  localStorage.setItem("emsUsers",JSON.stringify(users));
-  if(gsSettings.enabled){
-    try{await gsRequest("saveUsers",{users})}
-    catch(err){console.error(err);toast("Saved locally; Google Sheets sync failed")}
-  }
+function saveUsersToDatabase(){
+  pending.users=true;
+  persistCache();
+  setSyncStatus("Changes saved on device; waiting to sync.");
+  if(gsSettings.enabled) void syncFromGoogleSheets(true);
 }
-
+function refreshInBackground(){
+  if(currentSessionUser && gsSettings.enabled && !document.hidden) void syncFromGoogleSheets(true);
+}
+window.addEventListener("online",refreshInBackground);
+window.addEventListener("focus",refreshInBackground);
+document.addEventListener("visibilitychange",refreshInBackground);
+setInterval(refreshInBackground,60000);
 
 function isAdmin(){
   return currentSessionUser && currentSessionUser.role==="Administrator";
@@ -306,7 +410,7 @@ function applyRolePermissions(){
 
 function logout(){stopScanner();currentSessionUser=null;document.getElementById("app").classList.add("hidden");document.getElementById("login").classList.remove("hidden")}
 function showPage(page){if(page==="settings"&&!isAdmin()){toast("Administrator access required");return;}document.querySelectorAll(".page").forEach(p=>p.classList.add("hidden"));document.getElementById(page).classList.remove("hidden");document.querySelectorAll(".nav button").forEach(b=>b.classList.toggle("active",b.dataset.page===page));document.getElementById("pageTitle").textContent=page==="settings"?"Admin Settings":page[0].toUpperCase()+page.slice(1);if(page==="inventory")renderInventory();if(page==="settings"){renderUsers();loadGoogleSheetsSettingsUI()}}
-function renderAll(){document.getElementById("totalItems").textContent=inventory.length;document.getElementById("totalUnits").textContent=inventory.reduce((a,i)=>a+i.qty,0);document.getElementById("lowCount").textContent=inventory.filter(i=>i.qty<=i.par).length;document.getElementById("userCount").textContent=users.length;document.getElementById("frequent").innerHTML=[...inventory].sort((a,b)=>b.used-a.used).slice(0,5).map(i=>`<div class="item"><span>${i.name}<br><small class="muted">${i.used} uses</small></span><b>${i.qty}</b></div>`).join("");let low=inventory.filter(i=>i.qty<=i.par).sort((a,b)=>a.qty-b.qty);document.getElementById("lowStock").innerHTML=low.length?low.map(i=>`<div class="item"><span>${i.name}<br><small class="muted">Par ${i.par}</small></span><span class="badge low">${i.qty} left</span></div>`).join(""):`<p class="muted">No low-stock items.</p>`;localStorage.setItem("emsInventory",JSON.stringify(inventory));localStorage.setItem("emsUsers",JSON.stringify(users))}
+function renderAll(){document.getElementById("totalItems").textContent=inventory.length;document.getElementById("totalUnits").textContent=inventory.reduce((a,i)=>a+i.qty,0);document.getElementById("lowCount").textContent=inventory.filter(i=>i.qty<=i.par).length;document.getElementById("userCount").textContent=users.length;document.getElementById("frequent").innerHTML=[...inventory].sort((a,b)=>b.used-a.used).slice(0,5).map(i=>`<div class="item"><span>${i.name}<br><small class="muted">${i.used} uses</small></span><b>${i.qty}</b></div>`).join("");let low=inventory.filter(i=>i.qty<=i.par).sort((a,b)=>a.qty-b.qty);document.getElementById("lowStock").innerHTML=low.length?low.map(i=>`<div class="item"><span>${i.name}<br><small class="muted">Par ${i.par}</small></span><span class="badge low">${i.qty} left</span></div>`).join(""):`<p class="muted">No low-stock items.</p>`}
 function renderInventory(){let q=(document.getElementById("search").value||"").toLowerCase();let rows=inventory.filter(i=>Object.values(i).join(" ").toLowerCase().includes(q));document.getElementById("inventoryBody").innerHTML=rows.map((i,n)=>`<tr><td><b>${i.name}</b></td><td>${i.cat}</td><td>${i.loc}</td><td class="qty">${i.qty}</td><td>${i.par}</td><td><span class="badge ${i.qty<=i.par?'low':'good'}">${i.qty<=i.par?'LOW':'OK'}</span></td><td>${i.barcode}</td><td><button class="secondary" onclick="adjust(${inventory.indexOf(i)})">Adjust</button></td></tr>`).join("")}
 async function adjust(index){let v=prompt(`New quantity for ${inventory[index].name}:`,inventory[index].qty);if(v!==null&&!isNaN(v)&&v>=0){inventory[index].qty=Number(v);renderAll();renderInventory();await saveInventoryToDatabase();toast("Inventory updated")}}
 async function addItem(){if(!isAdmin()){toast("Administrator access required");return;}let name=prompt("Item name:");if(!name)return;let cat=prompt("Category:","General")||"General";let qty=Number(prompt("Starting quantity:","0"))||0;let par=Number(prompt("Par level:","5"))||5;let maxBarcode=inventory.reduce((m,i)=>Math.max(m,parseInt(String(i.barcode||"").replace(/\D/g,""))||100000),100000);let num=maxBarcode+1;inventory.push({name,cat,loc:"Supply Room",qty,par,used:0,barcode:"EMS-"+num});renderAll();renderInventory();await saveInventoryToDatabase();toast("Item added and barcode assigned")}
