@@ -50,8 +50,10 @@ also be used.
 
 ## First Login
 
-On first use, enter a username and a password of at least eight
-characters to create the initial local administrator account.
+On first use, sign in with an existing username and password from the
+Google Sheets Users tab. Every sign-in checks the current database and
+requires an active account and an internet connection. The login screen
+does not create accounts; configure the first administrator in the Users tab.
 
 ## Google Sheets Database Setup
 
@@ -75,7 +77,7 @@ Columns:
 
 Columns:
 
-`name | role | status`
+`name | username | password | role | status`
 
 ## 2. Configure Google Apps Script
 

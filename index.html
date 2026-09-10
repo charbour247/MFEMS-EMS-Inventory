@@ -70,6 +70,7 @@ label{display:block;font-size:13px;font-weight:700;margin:14px 0 7px}input,selec
     <label>Password</label><input id="password" type="password" autocomplete="current-password">
     <button id="loginButton" class="primary" onclick="login()">Sign In</button>
     <div id="authHint" class="demo"></div>
+    <div id="loginStorageStatus" class="demo" role="status"></div>
   </div>
 </div>
 
@@ -88,6 +89,7 @@ label{display:block;font-size:13px;font-weight:700;margin:14px 0 7px}input,selec
     <div class="topbar"><h2 id="pageTitle">Dashboard</h2><div class="user-chip">● <span id="currentUser">Admin</span></div></div>
 
     <p id="syncStatus" class="muted" role="status" aria-live="polite"></p>
+    <p id="deviceStorageStatus" class="muted" role="status"></p>
     <section id="dashboard" class="page">
       <div class="grid">
         <div class="stat"><small>Total Items</small><strong id="totalItems">0</strong></div>
@@ -168,9 +170,9 @@ const seed=[
 function readLocal(key,fallback){
   try{return JSON.parse(localStorage.getItem(key))??fallback;}catch(e){return fallback;}
 }
-let inventory=readLocal("emsInventory",seed);
+let inventory=readLocal("emsInventory",[]);
 let users=readLocal("emsUsers",[]);
-if(!Array.isArray(inventory)) inventory=structuredClone(seed);
+if(!Array.isArray(inventory)) inventory=[];
 if(!Array.isArray(users)) users=[];
 
 let currentSessionUser = null;
@@ -190,8 +192,27 @@ let gsSettings = {
   usersTab:savedGoogleSheetsSettings.usersTab||"Users"
 };
 
-function cacheKey(){return "emsCache:v1:"+JSON.stringify([gsSettings.endpoint,gsSettings.sheetId,gsSettings.inventoryTab,gsSettings.usersTab]);}
-let cache=readLocal(cacheKey(),null);
+// The spreadsheet identifies the data; redeploying Apps Script must not hide it.
+function cacheKey(){return "emsCache:v2:"+JSON.stringify([gsSettings.sheetId,gsSettings.inventoryTab,gsSettings.usersTab]);}
+function readDeviceCache(){
+  const valid=value=>value && Array.isArray(value.inventory) && Array.isArray(value.users);
+  const saved=readLocal(cacheKey(),null);
+  if(valid(saved)) return saved;
+  // Recover caches made by the previous app, including an older deployment URL.
+  let recovered=null;
+  try{
+    for(let i=0;i<localStorage.length;i++){
+      const key=localStorage.key(i);
+      if(!key || !key.startsWith("emsCache:v1:")) continue;
+      const source=JSON.parse(key.slice("emsCache:v1:".length));
+      if(JSON.stringify(source.slice(1))!==JSON.stringify([gsSettings.sheetId,gsSettings.inventoryTab,gsSettings.usersTab])) continue;
+      const candidate=readLocal(key,null);
+      if(valid(candidate) && (!recovered || (candidate.lastSync||"")>(recovered.lastSync||""))) recovered=candidate;
+    }
+  }catch(e){}
+  return recovered;
+}
+let cache=readDeviceCache();
 if(!cache || !Array.isArray(cache.inventory) || !Array.isArray(cache.users)){
   cache={inventory,users,pending:{},lastSync:null};
 }
@@ -201,6 +222,10 @@ let pending=cache.pending||{};
 let lastSync=cache.lastSync;
 let syncPromise=null;
 let storageAvailable=true;
+function showDeviceStorageStatus(message){
+  document.getElementById("loginStorageStatus").textContent=message;
+  document.getElementById("deviceStorageStatus").textContent=message;
+}
 function setSyncStatus(message){
   const suffix=storageAvailable?"":" Device storage unavailable; keep this page open until synced.";
   document.getElementById("syncStatus").textContent=message+suffix;
@@ -208,48 +233,73 @@ function setSyncStatus(message){
 }
 function persistCache(){
   try{
-    localStorage.setItem(cacheKey(),JSON.stringify({inventory,users,pending,lastSync}));
+    const serialized=JSON.stringify({inventory,users,pending,lastSync});
+    localStorage.setItem(cacheKey(),serialized);
+    if(localStorage.getItem(cacheKey())!==serialized) throw new Error("Storage verification failed");
     storageAvailable=true;
-  }catch(e){storageAvailable=false;setSyncStatus("Unable to save data on this device.");}
+    showDeviceStorageStatus("Saved on this device: "+inventory.length+" inventory items, "+users.length+" users.");
+    return true;
+  }catch(e){
+    storageAvailable=false;
+    showDeviceStorageStatus("Device storage could not be saved. Allow site storage in your browser and use the same site address when reopening the app.");
+    return false;
+  }
 }
-persistCache();
+if(cache.lastSync || inventory.length || users.length) persistCache();
+else showDeviceStorageStatus("No saved inventory on this device yet. Sign in while connected to load Google Sheets data.");
 
-if(!users.length){
-  document.getElementById("loginButton").textContent="Create Admin Account";
-  document.getElementById("authHint").textContent="First-time setup: choose your administrator credentials.";
+let loginInProgress=false;
+document.getElementById("authHint").textContent="Sign in with your Google Sheets username and password.";
+for(const id of ["username","password"]){
+  document.getElementById(id).addEventListener("keydown",event=>{
+    if(event.key==="Enter"){event.preventDefault();void login();}
+  });
 }
-
 async function login(){
-  if(gsSettings.enabled && !users.length){
-    document.getElementById("authHint").textContent="Checking Google Sheets for existing accounts...";
-    if(!await syncFromGoogleSheets(true)){
-      document.getElementById("authHint").textContent=document.getElementById("syncStatus").textContent;
-      return;
-    }
-  }
-  const u=document.getElementById("username").value.trim();
-  const p=document.getElementById("password").value;
-  if(!users.length){
-    if(!u || p.length<8){alert("Choose a username and a password of at least 8 characters.");return;}
-    users=[{name:u,username:u,password:p,role:"Administrator",status:"Active"}];
-    pending.users=true;
+  if(loginInProgress) return;
+  const button=document.getElementById("loginButton");
+  const hint=document.getElementById("authHint");
+  const username=document.getElementById("username").value.trim();
+  const password=document.getElementById("password").value;
+  if(!username || !password){hint.textContent="Enter your database username and password.";return;}
+  loginInProgress=true;
+  button.disabled=true;
+  button.textContent="Signing In...";
+  hint.textContent="Checking your database account...";
+  try{
+    // Sign-in is read-only and always uses current server credentials.
+    // Cached or pending local users must never authorize a new session.
+    const data=await gsRequest("getData");
+    if(!Array.isArray(data.users)) throw new Error("Apps Script did not return the Users tab.");
+    if(!data.users.length){hint.textContent="No accounts are configured in the database. Contact your administrator.";return;}
+    const match=data.users.find(user=>
+      String(user.username??"").trim()===username &&
+      user.password!=null && String(user.password)===password &&
+      String(user.status??"").trim().toLowerCase()==="active"
+    );
+    if(!match){hint.textContent="Invalid username or password, or account is inactive.";return;}
+    applyServerData(data);
+    currentSessionUser=match;
     persistCache();
+    document.getElementById("password").value="";
+    document.getElementById("currentUser").textContent=(match.name||match.username)+" · "+match.role;
+    document.getElementById("login").classList.add("hidden");
+    document.getElementById("app").classList.remove("hidden");
+    loadGoogleSheetsSettingsUI();
+    applyRolePermissions();
+    showPage("dashboard");
+    renderAll();renderInventory();
+    hint.textContent="Sign in with your Google Sheets username and password.";
+    setSyncStatus("Database account verified. Inventory loaded from device cache and Google Sheets.");
+    if(gsSettings.enabled) void syncFromGoogleSheets(true);
+  }catch(err){
+    hint.textContent="Unable to verify your database account. Check your connection and try again. "+err.message;
+  }finally{
+    loginInProgress=false;
+    button.disabled=false;
+    button.textContent="Sign In";
   }
-  const match=users.find(x=>(x.username||x.name.toLowerCase())===u && x.password===p && x.status==="Active");
-  if(!match){ alert("Invalid username or password."); return; }
-
-  currentSessionUser=match;
-  document.getElementById("currentUser").textContent=match.name+" · "+match.role;
-  document.getElementById("login").classList.add("hidden");
-  document.getElementById("app").classList.remove("hidden");
-  loadGoogleSheetsSettingsUI();
-  applyRolePermissions();
-  renderAll();
-  renderInventory();
-  setSyncStatus(lastSync?"Showing device data. Last synced: "+new Date(lastSync).toLocaleString():"Showing device data.");
-  if(gsSettings.enabled) void syncFromGoogleSheets(true);
 }
-
 function loadGoogleSheetsSettingsUI(){
   if(!document.getElementById("gsInventoryTab")) return;
   document.getElementById("gsInventoryTab").value=gsSettings.inventoryTab||"Inventory";
@@ -270,7 +320,7 @@ function saveGoogleSheetsSettings(){
   };
   try{localStorage.setItem("emsGoogleSheets",JSON.stringify(gsSettings));}catch(e){toast("Connection settings could not be saved on this device");}
   if(oldKey!==cacheKey()){
-  cache=readLocal(cacheKey(),{inventory:[],users:[],pending:{},lastSync:null});
+  cache=readDeviceCache()||{inventory:[],users:[],pending:{},lastSync:null};
   inventory=Array.isArray(cache.inventory)?cache.inventory:[];
   users=Array.isArray(cache.users)?cache.users:[];
   pending=cache.pending||{};
@@ -312,13 +362,6 @@ function syncFromGoogleSheets(silent=false){
       // Fetch first: a failed upload must not block unrelated server updates.
       const initial=await gsRequest("getData");
       applyServerData(initial);
-      if(!pending.inventory && !pending.users){
-        lastSync=new Date().toISOString();
-        persistCache();
-        setSyncStatus("Synced with Google Sheets: "+new Date(lastSync).toLocaleString());
-        if(!silent) toast("Synced from Google Sheets");
-        return true;
-      }
       // Serialize uploads and downloads. Edits made during a request stay pending.
       const uploadErrors=[];
       while(true){
@@ -364,8 +407,8 @@ function applyServerData(data){
   if(Array.isArray(data.users) && !pending.users) users=data.users;
   persistCache();
   renderAll();renderInventory();renderUsers();
-  document.getElementById("loginButton").textContent=users.length?"Sign In":"Create Admin Account";
-  document.getElementById("authHint").textContent=users.length?"":"First-time setup: choose your administrator credentials.";
+
+
 }
 async function testGoogleSheets(){
   saveGoogleSheetsSettings();
