@@ -19,11 +19,21 @@ Every later push to `main` redeploys the site automatically.
 
 ## Local preview
 
-Open `index.html` directly, or serve this directory with any static web server.
+Use a local HTTP server rather than opening `index.html` as a `file://` URL. Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/preview.ps1`, then open `http://127.0.0.1:8765/index.html`. The server binds only to this computer and serves only the app. Stop it with Ctrl+C.
+
+The local VS Code **Inventory app (localhost)** debug configuration starts this server automatically. If needed, stop its background task using **Tasks: Terminate Task**. The `.vscode` directory is ignored by Git, so this configuration is local to this checkout.
+
+Localhost has separate browser storage from the previous file URL and the hosted site. Sign in online to populate its cache; pending edits in the previous origin remain there.
 
 ## Device cache and Google Apps Script sync
 
-Sign in using an existing account from the Google Sheets Users tab (`name`, `username`, `password`, `role`, `status`). Every sign-in reads current database credentials and requires an `Active` account and a working connection. Usernames and passwords are case-sensitive. The login screen never creates a default or initial administrator account, and cached credentials do not authorize sign-in. Administrators must configure the first account in the Users tab.
+The backend source is `EMS_Inventory_Google_Apps_Script.gs`. Copy it into the spreadsheet's Apps Script project, then use **Deploy > Manage deployments > Edit > New version > Deploy** to update the existing web app. Saving the editor alone does not update the deployed version. The app's configured `/exec` URL must match the active deployment.
+
+The backend normalizes header capitalization and surrounding spaces and reports missing tabs or account columns. Users are read as displayed text; inventory quantities remain numeric. Format manually edited username and password cells as **Plain text** before entering them. If Sheets already removed leading zeros, re-enter the intended value; the script cannot recover lost characters. Password text and capitalization remain exact, and account status must be `Active`.
+
+Run backend regression checks with `node tests/backend-regression.js`. A deployment returning HTTP 404 must be repaired in Apps Script; spreadsheet parsing changes cannot fix an unavailable deployment.
+
+Sign in using an existing account from the Google Sheets Users tab (`name`, `username`, `password`, `role`, `status`). Every sign-in reads current database credentials and requires an `Active` account and a working connection. Usernames are case-insensitive; passwords remain case-sensitive. The login screen never creates a default or initial administrator account, and cached credentials do not authorize sign-in. Administrators must configure the first account in the Users tab.
 
 The app displays locally cached inventory immediately after sign-in, then refreshes it from the existing Apps Script endpoint. Inventory and user changes are saved to a device cache before uploading. Failed uploads remain pending across page reloads and retry on sign-in, reconnect, window focus, or every 60 seconds while the app is visible. The Sync button also starts a retry and refresh. A status message shows whether data is synced or waiting.
 

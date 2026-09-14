@@ -180,7 +180,7 @@ let qrScanner = null;
 let scanLocked = false;
 
 const GOOGLE_SHEETS_CONFIG = Object.freeze({
-  endpoint:"https://script.google.com/macros/s/AKfycbweLXqnd84CiraMH2rpa8TpCzUPIgYAw6MSwMRUDbZRv3YZWlTfCv2c32NITiB4Aekn/exec",
+  endpoint:"https://script.google.com/macros/s/AKfycbw90CB3YToVvjTG2hCyL_dvVvG5lxN3FltJO3Bva4kpQv_gB09Cu6m8k7QBnq5jRfUl/exec",
   sheetId:"1HNm7G6D82PjMFFK1AjRqp57Sfc_SnCuWuIj0dT15vu0"
 });
 const savedGoogleSheetsSettings = readLocal("emsGoogleSheets",{});
@@ -273,7 +273,7 @@ async function login(){
     if(!Array.isArray(data.users)) throw new Error("Apps Script did not return the Users tab.");
     if(!data.users.length){hint.textContent="No accounts are configured in the database. Contact your administrator.";return;}
     const match=data.users.find(user=>
-      String(user.username??"").trim()===username &&
+      String(user.username??"").trim().toLowerCase()===username.toLowerCase() &&
       user.password!=null && String(user.password)===password &&
       String(user.status??"").trim().toLowerCase()==="active"
     );
@@ -334,23 +334,37 @@ async function gsRequest(action,payload={}){
   if(!gsSettings.endpoint) throw new Error("Apps Script Web App URL is not configured.");
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),30000);
+  const readOnly=action==="getData"||action==="ping";
+  const requestData={
+    action,
+    sheetId:gsSettings.sheetId,
+    inventoryTab:gsSettings.inventoryTab,
+    usersTab:gsSettings.usersTab,
+    ...payload
+  };
+  const query=Object.entries(requestData).map(([key,value])=>encodeURIComponent(key)+"="+encodeURIComponent(String(value))).join("&");
   try{
-  const response=await fetch(gsSettings.endpoint,{
+  const response=await fetch(readOnly?gsSettings.endpoint+"?"+query:gsSettings.endpoint,{
     signal:controller.signal,
-    method:"POST",
-    headers:{"Content-Type":"text/plain;charset=utf-8"},
-    body:JSON.stringify({
-      action,
-      sheetId:gsSettings.sheetId,
-      inventoryTab:gsSettings.inventoryTab,
-      usersTab:gsSettings.usersTab,
-      ...payload
-    })
+    // Apps Script redirects to a temporary Content Service URL.
+    // Always request a fresh response when verifying database credentials.
+    cache:"no-store",
+    method:readOnly?"GET":"POST",
+    ...(readOnly?{}:{headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(requestData)})
   });
-  if(!response.ok) throw new Error("Google Sheets request failed: "+response.status);
-  const data=await response.json();
-  if(data.ok===false) throw new Error(data.error||"Google Sheets operation failed.");
+  if(!response.ok) throw new Error("Apps Script returned HTTP "+response.status+". Ask your administrator to check the web app deployment URL and access settings.");
+  const body=await response.text();
+  let data;
+  try{data=JSON.parse(body);}catch(error){
+    throw new Error("Apps Script did not return JSON. Ask your administrator to check the deployed /exec URL, web app access settings, and doPost handler.");
+  }
+  if(!data || typeof data!=="object" || Array.isArray(data)) throw new Error("Apps Script returned an invalid response.");
+  if(data.ok===false || data.success===false || data.error) throw new Error(String(data.error||data.message||"Google Sheets operation failed."));
   return data;
+  }catch(error){
+    if(error.name==="AbortError") throw new Error("Apps Script did not respond within 30 seconds. Try again; if this continues, ask your administrator to check Apps Script executions.");
+    if(error instanceof TypeError) throw new Error("The browser could not reach Apps Script. Check your internet connection and ask your administrator to verify the web app URL and access settings.");
+    throw error;
   }finally{clearTimeout(timeout);}
 }
 function syncFromGoogleSheets(silent=false){

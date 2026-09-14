@@ -15,13 +15,13 @@ async function runCacheRegressionTests(source){
     const document={getElementById:element,querySelector:element,querySelectorAll:()=>[],addEventListener(){}};
     let requests=0;
     const actions=[];
-    const fetch=async(url,options)=>{requests++;actions.push(JSON.parse(options.body).action);if(offline) throw new Error("Offline");return {ok:true,json:async()=>JSON.parse(JSON.stringify(serverData))};};
+    const fetch=async(url,options)=>{requests++;actions.push(JSON.parse(options.body).action);if(offline) throw new Error("Offline");return {ok:true,text:async()=>typeof serverData==="string"?serverData:JSON.stringify(serverData)};};
     const api=new Function("localStorage","document","window","fetch","setTimeout","clearTimeout","setInterval","AbortController","alert",source+`
       return {login,sync:syncFromGoogleSheets,apply:applyServerData,key:cacheKey,renderInventory,
         snapshot:()=>({inventory,users,pending,lastSync,storageAvailable,currentSessionUser}),
         edit:()=>{gsSettings.enabled=false;inventory[0].qty=41;saveInventoryToDatabase();}};
     `)(storage,document,{addEventListener(){}},fetch,()=>1,()=>{},()=>1,class{abort(){}},message=>{throw new Error(message);});
-    element("username").value="test";
+    element("username").value="TEST";
     element("password").value="test-password";
     return {...api,element,actions,requests:()=>requests};
   }
@@ -60,6 +60,19 @@ async function runCacheRegressionTests(source){
     assert(!attempt.snapshot().currentSessionUser,"Empty, changed, inactive, or missing-username accounts must be rejected despite cached credentials");
     assert(attempt.actions.join() === "getData","Rejected login must not upload or create accounts");
     assert(attempt.element("loginButton").textContent==="Sign In" && !attempt.element("loginButton").disabled,"Login button must reset after rejection");
+  }
+  for(const [response,message] of [
+    ["<html>Google sign-in required</html>","did not return JSON"],
+    [null,"invalid response"],
+    [{success:false,message:"Users tab missing"},"Users tab missing"],
+    [{error:"Spreadsheet access denied"},"Spreadsheet access denied"]
+  ]){
+    const attempt=open(storage,false,response);
+    await attempt.login();
+    assert(!attempt.snapshot().currentSessionUser,"Backend failures must not authorize cached accounts");
+    assert(attempt.element("authHint").textContent.includes(message),"Login must explain the backend failure: "+message);
+    assert(attempt.actions.join()==="getData","Backend failures must not trigger uploads");
+    assert(!attempt.element("loginButton").disabled,"Backend failure must allow retry");
   }
   const changed=open(storage,false,{...data,users:[{...data.users[0],password:"changed-password"}]});
   changed.element("password").value="changed-password";
