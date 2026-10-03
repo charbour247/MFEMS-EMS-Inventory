@@ -69,6 +69,14 @@ label{display:block;font-size:13px;font-weight:700;margin:14px 0 7px}input,selec
     <label>Username</label><input id="username" autocomplete="username">
     <label>Password</label><input id="password" type="password" autocomplete="current-password">
     <button id="loginButton" class="primary" onclick="login()">Sign In</button>
+    <button id="createAccountButton" onclick="toggleRegistration()">First time? Create Account</button>
+    <div id="registration" class="hidden">
+      <label for="newName">Full name</label><input id="newName" autocomplete="name">
+      <label for="newUsername">Choose a username</label><input id="newUsername" autocomplete="username">
+      <label for="newPassword">Choose a password (at least 8 characters)</label><input id="newPassword" type="password" autocomplete="new-password">
+      <label for="confirmPassword">Confirm password</label><input id="confirmPassword" type="password" autocomplete="new-password">
+      <button id="registerButton" class="primary" onclick="registerAccount()">Create My Account</button>
+    </div>
     <div id="authHint" class="demo"></div>
     <div id="loginStorageStatus" class="demo" role="status"></div>
   </div>
@@ -249,6 +257,40 @@ if(cache.lastSync || inventory.length || users.length) persistCache();
 else showDeviceStorageStatus("No saved inventory on this device yet. Sign in while connected to load Google Sheets data.");
 
 let loginInProgress=false;
+let registrationInProgress=false;
+function toggleRegistration(){
+  document.getElementById("registration").classList.toggle("hidden");
+}
+async function registerAccount(){
+  if(registrationInProgress || loginInProgress) return;
+  const hint=document.getElementById("authHint");
+  const name=document.getElementById("newName").value.trim();
+  const username=document.getElementById("newUsername").value.trim();
+  const password=document.getElementById("newPassword").value;
+  if(!name || !/^[A-Za-z0-9._-]{3,40}$/.test(username)){
+    hint.textContent="Enter your name and a username of 3–40 letters, numbers, dots, underscores, or hyphens.";return;
+  }
+  if(password.length<8){hint.textContent="Choose a password with at least 8 characters.";return;}
+  if(password!==document.getElementById("confirmPassword").value){hint.textContent="Passwords do not match.";return;}
+  registrationInProgress=true;
+  document.getElementById("registerButton").disabled=true;
+  document.getElementById("loginButton").disabled=true;
+  hint.textContent="Creating your account...";
+  try{
+    await gsRequest("registerUser",{name,username,password});
+    document.getElementById("username").value=username;
+    document.getElementById("password").value="";
+    for(const id of ["newName","newUsername","newPassword","confirmPassword"]) document.getElementById(id).value="";
+    document.getElementById("registration").classList.add("hidden");
+    hint.textContent="Account created. Enter your chosen password above and select Sign In.";
+    document.getElementById("password").focus();
+  }catch(err){hint.textContent="Could not create account. "+err.message;}
+  finally{
+    registrationInProgress=false;
+    document.getElementById("registerButton").disabled=false;
+    document.getElementById("loginButton").disabled=false;
+  }
+}
 document.getElementById("authHint").textContent="Sign in with your Google Sheets username and password.";
 for(const id of ["username","password"]){
   document.getElementById(id).addEventListener("keydown",event=>{
@@ -256,7 +298,7 @@ for(const id of ["username","password"]){
   });
 }
 async function login(){
-  if(loginInProgress) return;
+  if(loginInProgress || registrationInProgress) return;
   const button=document.getElementById("loginButton");
   const hint=document.getElementById("authHint");
   const username=document.getElementById("username").value.trim();

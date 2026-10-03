@@ -33,7 +33,11 @@ The backend normalizes header capitalization and surrounding spaces and reports 
 
 Run backend regression checks with `node tests/backend-regression.js`. A deployment returning HTTP 404 must be repaired in Apps Script; spreadsheet parsing changes cannot fix an unavailable deployment.
 
-Sign in using an existing account from the Google Sheets Users tab (`name`, `username`, `password`, `role`, `status`). Every sign-in reads current database credentials and requires an `Active` account and a working connection. Usernames are case-insensitive; passwords remain case-sensitive. The login screen never creates a default or initial administrator account, and cached credentials do not authorize sign-in. Administrators must configure the first account in the Users tab.
+First-time users select **First time? Create Account** on the login screen, enter their name, choose a unique username and a password of at least 8 characters, and confirm the password. New accounts are saved in the Google Sheets Users tab as active **Inventory User** accounts. They can then sign in from any device with their chosen credentials. Usernames use 3–40 letters, numbers, dots, underscores, or hyphens and are checked case-insensitively for duplicates. Registration requires a connection and an existing Users tab with the required headers.
+
+Deploy the updated `EMS_Inventory_Google_Apps_Script.gs` as a new version of your existing Apps Script web app and publish the updated `index.html` to enable registration. Keep the existing deployment URL. Until the backend is updated, account creation will report "Unknown action".
+
+Every sign-in still reads current accounts from the Users tab (`name`, `username`, `password`, `role`, `status`) and requires an `Active` account and a working connection. Passwords remain case-sensitive. Self-registration never grants administrator access; administrators must configure the first administrator account in the Users tab. Cached credentials do not authorize sign-in. Registration uses the prototype's existing credential storage; it does not add secure server-side authentication.
 
 The app displays locally cached inventory immediately after sign-in, then refreshes it from the existing Apps Script endpoint. Inventory and user changes are saved to a device cache before uploading. Failed uploads remain pending across page reloads and retry on sign-in, reconnect, window focus, or every 60 seconds while the app is visible. The Sync button also starts a retry and refresh. A status message shows whether data is synced or waiting.
 
