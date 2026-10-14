@@ -606,7 +606,19 @@ async function addScannedStock(index){
   renderScannedItem(inventory[index]);
 }
 
-function exportCSV(){let csv="Item Name,Category,Location,Quantity,Par Level,Status,Barcode\\n"+inventory.map(i=>`"${i.name}","${i.cat}","${i.loc}",${i.qty},${i.par},"${i.qty<=i.par?'LOW':'OK'}","${i.barcode}"`).join("\\n");let a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download="ems-inventory.csv";a.click();toast("CSV exported")}
+function exportCSV(){
+  const rows=[
+    ["Item Name","Category","Location","Quantity","Par Level","Status","Barcode"],
+    ...inventory.map(i=>[i.name,i.cat,i.loc,i.qty,i.par,i.qty<=i.par?"LOW":"OK",i.barcode])
+  ];
+  const csv=rows.map(row=>row.map(value=>'"'+String(value??"").replace(/"/g,'""')+'"').join(",")).join("\r\n");
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob(["\uFEFF",csv],{type:"text/csv;charset=utf-8"}));
+  a.download="ems-inventory.csv";
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  toast("CSV exported");
+}
 function backup(){let blob=new Blob([JSON.stringify({inventory,users},null,2)],{type:"application/json"});let a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="ems-inventory-backup.json";a.click();toast("Backup created")}
 function resetData(){if(confirm("Reset the prototype to demo data?")){localStorage.clear();location.reload()}}
 function toast(msg){let t=document.getElementById("toast");t.textContent=msg;t.classList.remove("hidden");setTimeout(()=>t.classList.add("hidden"),2200)}
