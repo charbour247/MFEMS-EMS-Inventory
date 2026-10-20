@@ -16,11 +16,13 @@ async function runCacheRegressionTests(source){
     let requests=0;
     const actions=[];
     const fetch=async(url,options)=>{requests++;actions.push(JSON.parse(options.body).action);if(offline) throw new Error("Offline");return {ok:true,text:async()=>typeof serverData==="string"?serverData:JSON.stringify(serverData)};};
-    const api=new Function("localStorage","document","window","fetch","setTimeout","clearTimeout","setInterval","AbortController","alert",source+`
-      return {login,sync:syncFromGoogleSheets,apply:applyServerData,key:cacheKey,renderInventory,
+    let prompts=0;
+    const api=new Function("localStorage","document","window","fetch","setTimeout","clearTimeout","setInterval","AbortController","alert","prompt",source+`
+      return {login,sync:syncFromGoogleSheets,apply:applyServerData,key:cacheKey,renderInventory,adjust,
+        setRole:role=>{currentSessionUser={role}},prompts:()=>prompts,
         snapshot:()=>({inventory,users,pending,lastSync,storageAvailable,currentSessionUser}),
         edit:()=>{gsSettings.enabled=false;inventory[0].qty=41;saveInventoryToDatabase();}};
-    `)(storage,document,{addEventListener(){}},fetch,()=>1,()=>{},()=>1,class{abort(){}},message=>{throw new Error(message);});
+    `)(storage,document,{addEventListener(){}},fetch,()=>1,()=>{},()=>1,class{abort(){}},message=>{throw new Error(message);},()=>{prompts++;return "99";});
     element("username").value="TEST";
     element("password").value="test-password";
     return {...api,element,actions,requests:()=>requests};
@@ -32,6 +34,11 @@ async function runCacheRegressionTests(source){
   await first.sync(true);
   assert(first.snapshot().currentSessionUser?.username==="test","First login must accept database credentials");
   assert(JSON.parse(storage.getItem(first.key())).inventory[0].qty===42,"First login must persist downloaded inventory");
+  first.setRole("Inventory User");
+  first.renderInventory();
+  assert(!first.element("inventoryBody").innerHTML.includes(">Adjust</button>"),"Non-admins must not see inventory adjustment controls");
+  await first.adjust(0);
+  assert(first.snapshot().inventory[0].qty===42 && first.prompts()===0,"Non-admin inventory adjustment calls must not change quantity or prompt for input");
   const reopened=open(storage,true);
   assert(reopened.requests()===0 && reopened.snapshot().inventory[0].qty===42,"Reload must restore inventory before requesting the server");
   await reopened.login();
