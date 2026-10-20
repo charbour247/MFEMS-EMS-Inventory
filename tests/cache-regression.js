@@ -21,6 +21,8 @@ async function runCacheRegressionTests(source){
     const api=new Function("localStorage","document","window","fetch","setTimeout","clearTimeout","setInterval","AbortController","alert","prompt","URL","Blob",source+`
       return {login,sync:syncFromGoogleSheets,apply:applyServerData,key:cacheKey,renderInventory,adjust,exportCSV,
         setRole:role=>{currentSessionUser={role}},
+        setSyncEnabled:enabled=>{gsSettings.enabled=enabled},
+        updateName:updateItemName,updateCategory:updateItemCategory,
         snapshot:()=>({inventory,users,pending,lastSync,storageAvailable,currentSessionUser}),
         edit:()=>{gsSettings.enabled=false;inventory[0].qty=41;saveInventoryToDatabase();}};
     `)(storage,document,{addEventListener(){}},fetch,()=>1,()=>{},()=>1,class{abort(){}},message=>{throw new Error(message);},()=>{prompts++;return "99";},{createObjectURL:blob=>{downloads.push(blob.parts.join(""));return "blob:test";}},class{constructor(parts){this.parts=parts;}});
@@ -38,8 +40,21 @@ async function runCacheRegressionTests(source){
   first.setRole("Inventory User");
   first.renderInventory();
   assert(!first.element("inventoryBody").innerHTML.includes(">Adjust</button>"),"Non-admins must not see inventory adjustment controls");
+  assert(!first.element("inventoryBody").innerHTML.includes("<select") && !first.element("inventoryBody").innerHTML.includes("name-editor"),"Non-admins must not see editable inventory fields");
   await first.adjust(0);
   assert(first.snapshot().inventory[0].qty===42 && first.prompts()===0,"Non-admin inventory adjustment calls must not change quantity or prompt for input");
+  const editorStorage=createStore();
+  const editor=open(editorStorage,false,{...data,inventory:[{...data.inventory[0],cat:"Supplies"}]});
+  editor.apply({...data,inventory:[{...data.inventory[0],cat:"Supplies"}]});
+  editor.setRole("Administrator");
+  editor.setSyncEnabled(false);
+  editor.renderInventory();
+  assert(editor.element("inventoryBody").innerHTML.includes("name-editor") && editor.element("inventoryBody").innerHTML.includes("<select") && editor.element("inventoryBody").innerHTML.includes("Supplies"),"Admins must have editable item names and a category dropdown");
+  assert(editor.element("inventoryBody").innerHTML.includes("__add_new_category__"),"Admins must be able to add a category from the dropdown");
+  await editor.updateName(0,"Updated item");
+  await editor.updateCategory(0,"__add_new_category__");
+  assert(editor.snapshot().inventory[0].name==="Updated item" && editor.snapshot().inventory[0].cat==="99","Admin item name and new category edits must update inventory");
+  assert(JSON.parse(editorStorage.getItem(editor.key())).inventory[0].cat==="99" && editor.snapshot().pending.inventory,"Admin inventory edits must persist locally and queue for sync");
   first.setRole("Administrator");
   first.snapshot().inventory[0].name='Bandage, "sterile"';
   first.exportCSV();
