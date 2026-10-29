@@ -8,22 +8,27 @@ async function runCacheRegressionTests(source){
   };
   function open(storage,offline=false,serverData=data){
     const elements=new Map();
+    const downloads=[];
     const element=id=>{
       if(!elements.has(id)) elements.set(id,{value:"",textContent:"",innerHTML:"",addEventListener(){},classList:{add(){},remove(){},toggle(){}}});
       return elements.get(id);
     };
-    const document={getElementById:element,querySelector:element,querySelectorAll:()=>[],addEventListener(){}};
+    const document={getElementById:element,querySelector:element,querySelectorAll:()=>[],addEventListener(){},createElement:()=>({click(){}})};
     let requests=0;
     const actions=[];
-    const fetch=async(url,options)=>{requests++;actions.push(JSON.parse(options.body).action);if(offline) throw new Error("Offline");return {ok:true,text:async()=>typeof serverData==="string"?serverData:JSON.stringify(serverData)};};
-    const api=new Function("localStorage","document","window","fetch","setTimeout","clearTimeout","setInterval","AbortController","alert",source+`
-      return {login,sync:syncFromGoogleSheets,apply:applyServerData,key:cacheKey,renderInventory,
+    const fetch=async(url,options)=>{requests++;const request=options.body?JSON.parse(options.body):Object.fromEntries(new URL(url).searchParams);actions.push(request.action);if(offline) throw new Error("Offline");return {ok:true,text:async()=>typeof serverData==="string"?serverData:JSON.stringify(serverData)};};
+    let prompts=0;
+    const api=new Function("localStorage","document","window","fetch","setTimeout","clearTimeout","setInterval","AbortController","alert","prompt","URL","Blob",source+`
+      return {login,sync:syncFromGoogleSheets,apply:applyServerData,key:cacheKey,renderInventory,adjust,exportCSV,
+        setRole:role=>{currentSessionUser={role}},
+        setSyncEnabled:enabled=>{gsSettings.enabled=enabled},
+        updateName:updateItemName,updateCategory:updateItemCategory,
         snapshot:()=>({inventory,users,pending,lastSync,storageAvailable,currentSessionUser}),
         edit:()=>{gsSettings.enabled=false;inventory[0].qty=41;saveInventoryToDatabase();}};
-    `)(storage,document,{addEventListener(){}},fetch,()=>1,()=>{},()=>1,class{abort(){}},message=>{throw new Error(message);});
+    `)(storage,document,{addEventListener(){}},fetch,()=>1,()=>{},()=>1,class{abort(){}},message=>{throw new Error(message);},()=>{prompts++;return "99";},{createObjectURL:blob=>{downloads.push(blob.parts.join(""));return "blob:test";}},class{constructor(parts){this.parts=parts;}});
     element("username").value="TEST";
     element("password").value="test-password";
-    return {...api,element,actions,requests:()=>requests};
+    return {...api,element,actions,requests:()=>requests,prompts:()=>prompts,downloads:()=>downloads};
   }
   const storage=createStore();
   const first=open(storage);
@@ -32,6 +37,30 @@ async function runCacheRegressionTests(source){
   await first.sync(true);
   assert(first.snapshot().currentSessionUser?.username==="test","First login must accept database credentials");
   assert(JSON.parse(storage.getItem(first.key())).inventory[0].qty===42,"First login must persist downloaded inventory");
+  first.setRole("Inventory User");
+  first.renderInventory();
+  assert(!first.element("inventoryBody").innerHTML.includes(">Adjust</button>"),"Non-admins must not see inventory adjustment controls");
+  assert(!first.element("inventoryBody").innerHTML.includes("<select") && !first.element("inventoryBody").innerHTML.includes("name-editor"),"Non-admins must not see editable inventory fields");
+  await first.adjust(0);
+  assert(first.snapshot().inventory[0].qty===42 && first.prompts()===0,"Non-admin inventory adjustment calls must not change quantity or prompt for input");
+  const editorStorage=createStore();
+  const editor=open(editorStorage,false,{...data,inventory:[{...data.inventory[0],cat:"Supplies"}]});
+  editor.apply({...data,inventory:[{...data.inventory[0],cat:"Supplies"}]});
+  editor.setRole("Administrator");
+  editor.setSyncEnabled(false);
+  editor.renderInventory();
+  assert(editor.element("inventoryBody").innerHTML.includes("name-editor") && editor.element("inventoryBody").innerHTML.includes("<select") && editor.element("inventoryBody").innerHTML.includes("Supplies"),"Admins must have editable item names and a category dropdown");
+  assert(editor.element("inventoryBody").innerHTML.includes("__add_new_category__"),"Admins must be able to add a category from the dropdown");
+  await editor.updateName(0,"Updated item");
+  await editor.updateCategory(0,"__add_new_category__");
+  assert(editor.snapshot().inventory[0].name==="Updated item" && editor.snapshot().inventory[0].cat==="99","Admin item name and new category edits must update inventory");
+  assert(JSON.parse(editorStorage.getItem(editor.key())).inventory[0].cat==="99" && editor.snapshot().pending.inventory,"Admin inventory edits must persist locally and queue for sync");
+  first.setRole("Administrator");
+  first.snapshot().inventory[0].name='Bandage, "sterile"';
+  first.exportCSV();
+  const csvRows=first.downloads()[0].replace(/^\uFEFF/, "").split("\r\n");
+  assert(csvRows.length===2 && csvRows[0]==='"Item Name","Category","Location","Quantity","Par Level","Status","Barcode"',"CSV export must use one header row and one item row per record");
+  assert(csvRows[1]==='"Bandage, ""sterile""","","","42","5","OK","TEST-1"',"CSV export must escape field quotes and preserve item details in columns");
   const reopened=open(storage,true);
   assert(reopened.requests()===0 && reopened.snapshot().inventory[0].qty===42,"Reload must restore inventory before requesting the server");
   await reopened.login();

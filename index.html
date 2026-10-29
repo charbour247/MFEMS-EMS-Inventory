@@ -17,6 +17,7 @@ label{display:block;font-size:13px;font-weight:700;margin:14px 0 7px}input,selec
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}.stat,.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:18px;box-shadow:0 8px 24px #0003}.stat small,.muted{color:var(--muted)}.stat strong{display:block;font-size:30px;margin-top:7px}.section-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}.card h3{margin:0 0 15px}.item{display:flex;justify-content:space-between;gap:10px;padding:13px 0;border-bottom:1px solid #edf0f2}.item:last-child{border-bottom:0}.item small{color:var(--muted)}.badge{padding:5px 8px;border-radius:999px;font-size:11px;font-weight:800}.low{background:#4b2025;color:#ff9b9b}.good{background:#173d2a;color:#74e39a}.warn{background:#493b19;color:#ffd66e}
 .toolbar{display:flex;gap:10px;margin-bottom:14px}.toolbar input{max-width:330px}.secondary{background:#123653;color:var(--text);border:1px solid var(--border);padding:10px 14px;border-radius:9px;font-weight:700}.danger{background:#fff0f0;color:var(--danger);border:1px solid #f2cccc;padding:9px 12px;border-radius:8px}
 .table-wrap{overflow:auto;background:var(--card);border:1px solid var(--border);border-radius:14px}.table{width:100%;border-collapse:collapse;min-width:650px}.table th,.table td{text-align:left;padding:13px 15px;border-bottom:1px solid #edf0f2;font-size:13px}.table th{background:#09233b;color:var(--muted);font-size:11px;text-transform:uppercase}.qty{font-weight:800}
+.table input,.table select{width:auto;min-width:110px;padding:7px}.table .name-editor{min-width:160px}
 .settings{display:grid;grid-template-columns:1fr 1fr;gap:18px}.form-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:15px}.toggle{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #edf0f2}.toggle input{width:auto}.toast{position:fixed;right:20px;bottom:20px;background:#17212b;color:white;padding:12px 16px;border-radius:10px;box-shadow:0 10px 30px #0003}
 @media(max-width:900px){
 .sidebar{position:fixed;z-index:20;left:0;right:0;bottom:0;top:auto;width:100%;height:68px;padding:7px 8px;background:#061a30;border-top:1px solid #214563;display:flex;align-items:center}
@@ -500,6 +501,13 @@ setInterval(refreshInBackground,60000);
 function isAdmin(){
   return currentSessionUser && currentSessionUser.role==="Administrator";
 }
+function escapeHtml(value){
+  return String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+}
+function inventoryCategories(){
+  const categories=[...new Set(inventory.map(item=>String(item.cat??"").trim()).filter(Boolean))];
+  return categories.length?categories:["General"];
+}
 function applyRolePermissions(){
   const addBtn=document.getElementById("addItemBtn");
   if(addBtn) addBtn.classList.toggle("hidden",!isAdmin());
@@ -510,8 +518,53 @@ function applyRolePermissions(){
 function logout(){stopScanner();currentSessionUser=null;document.getElementById("app").classList.add("hidden");document.getElementById("login").classList.remove("hidden")}
 function showPage(page){if(page==="settings"&&!isAdmin()){toast("Administrator access required");return;}document.querySelectorAll(".page").forEach(p=>p.classList.add("hidden"));document.getElementById(page).classList.remove("hidden");document.querySelectorAll(".nav button").forEach(b=>b.classList.toggle("active",b.dataset.page===page));document.getElementById("pageTitle").textContent=page==="settings"?"Admin Settings":page[0].toUpperCase()+page.slice(1);if(page==="inventory")renderInventory();if(page==="settings"){renderUsers();loadGoogleSheetsSettingsUI()}}
 function renderAll(){document.getElementById("totalItems").textContent=inventory.length;document.getElementById("totalUnits").textContent=inventory.reduce((a,i)=>a+i.qty,0);document.getElementById("lowCount").textContent=inventory.filter(i=>i.qty<=i.par).length;document.getElementById("userCount").textContent=users.length;document.getElementById("frequent").innerHTML=[...inventory].sort((a,b)=>b.used-a.used).slice(0,5).map(i=>`<div class="item"><span>${i.name}<br><small class="muted">${i.used} uses</small></span><b>${i.qty}</b></div>`).join("");let low=inventory.filter(i=>i.qty<=i.par).sort((a,b)=>a.qty-b.qty);document.getElementById("lowStock").innerHTML=low.length?low.map(i=>`<div class="item"><span>${i.name}<br><small class="muted">Par ${i.par}</small></span><span class="badge low">${i.qty} left</span></div>`).join(""):`<p class="muted">No low-stock items.</p>`}
-function renderInventory(){let q=(document.getElementById("search").value||"").toLowerCase();let rows=inventory.filter(i=>Object.values(i).join(" ").toLowerCase().includes(q));document.getElementById("inventoryBody").innerHTML=rows.map((i,n)=>`<tr><td><b>${i.name}</b></td><td>${i.cat}</td><td>${i.loc}</td><td class="qty">${i.qty}</td><td>${i.par}</td><td><span class="badge ${i.qty<=i.par?'low':'good'}">${i.qty<=i.par?'LOW':'OK'}</span></td><td>${i.barcode}</td><td><button class="secondary" onclick="adjust(${inventory.indexOf(i)})">Adjust</button></td></tr>`).join("")}
-async function adjust(index){let v=prompt(`New quantity for ${inventory[index].name}:`,inventory[index].qty);if(v!==null&&!isNaN(v)&&v>=0){inventory[index].qty=Number(v);renderAll();renderInventory();await saveInventoryToDatabase();toast("Inventory updated")}}
+function renderInventory(){
+  const q=(document.getElementById("search").value||"").toLowerCase();
+  const rows=inventory.filter(i=>Object.values(i).join(" ").toLowerCase().includes(q));
+  const categories=inventoryCategories();
+  document.getElementById("inventoryBody").innerHTML=rows.map(item=>{
+    const index=inventory.indexOf(item);
+    const category=String(item.cat??"");
+    const nameCell=isAdmin()
+      ?`<input class="name-editor" aria-label="Item name" value="${escapeHtml(item.name)}" onchange="updateItemName(${index},this.value)">`
+      :`<b>${escapeHtml(item.name)}</b>`;
+    const categoryCell=isAdmin()
+      ?`<select aria-label="Category" onchange="updateItemCategory(${index},this.value)">${category? "":'<option value="" selected>Uncategorized</option>'}${categories.map(value=>`<option value="${escapeHtml(value)}"${value===category?" selected":""}>${escapeHtml(value)}</option>`).join("")}<option value="__add_new_category__">＋ Add category...</option></select>`
+      :escapeHtml(category);
+    return `<tr><td>${nameCell}</td><td>${categoryCell}</td><td>${escapeHtml(item.loc)}</td><td class="qty">${escapeHtml(item.qty)}</td><td>${escapeHtml(item.par)}</td><td><span class="badge ${item.qty<=item.par?'low':'good'}">${item.qty<=item.par?'LOW':'OK'}</span></td><td>${escapeHtml(item.barcode)}</td><td>${isAdmin()?`<button class="secondary" onclick="adjust(${index})">Adjust</button>`:""}</td></tr>`;
+  }).join("");
+}
+async function updateItemName(index,value){
+  if(!isAdmin()){toast("Administrator access required");return;}
+  const item=inventory[index];
+  if(!item) return;
+  const name=String(value??"").trim();
+  if(!name){toast("Item name cannot be empty");renderInventory();return;}
+  if(name===item.name) return;
+  item.name=name;
+  renderAll();renderInventory();
+  await saveInventoryToDatabase();
+  toast("Item name updated");
+}
+async function updateItemCategory(index,value){
+  if(!isAdmin()){toast("Administrator access required");return;}
+  const item=inventory[index];
+  if(!item) return;
+  let category=value;
+  if(category==="__add_new_category__"){
+    category=(prompt("New category name:")||"").trim();
+    if(!category){renderInventory();return;}
+  }else if(!inventoryCategories().includes(category)){
+    renderInventory();
+    return;
+  }
+  if(category===item.cat){renderInventory();return;}
+  item.cat=category;
+  renderAll();renderInventory();
+  await saveInventoryToDatabase();
+  toast("Category updated");
+}
+async function adjust(index){if(!isAdmin()){toast("Administrator access required");return;}let v=prompt(`New quantity for ${inventory[index].name}:`,inventory[index].qty);if(v!==null&&!isNaN(v)&&v>=0){inventory[index].qty=Number(v);renderAll();renderInventory();await saveInventoryToDatabase();toast("Inventory updated")}}
 async function addItem(){if(!isAdmin()){toast("Administrator access required");return;}let name=prompt("Item name:");if(!name)return;let cat=prompt("Category:","General")||"General";let qty=Number(prompt("Starting quantity:","0"))||0;let par=Number(prompt("Par level:","5"))||5;let maxBarcode=inventory.reduce((m,i)=>Math.max(m,parseInt(String(i.barcode||"").replace(/\D/g,""))||100000),100000);let num=maxBarcode+1;inventory.push({name,cat,loc:"Supply Room",qty,par,used:0,barcode:"EMS-"+num});renderAll();renderInventory();await saveInventoryToDatabase();toast("Item added and barcode assigned")}
 async function addUser(){if(!isAdmin()){toast("Administrator access required");return;}let name=prompt("User name:");if(!name)return;let username=(prompt("Username:",name.toLowerCase().replace(/\s+/g,""))||"").trim();if(!username)return;let password=prompt("Temporary password:")||"";if(password.length<8){alert("Password must be at least 8 characters.");return;}let admin=confirm("Make this user an Administrator?");users.push({name,username,password,role:admin?"Administrator":"Inventory User",status:"Active"});renderUsers();renderAll();await saveUsersToDatabase();toast("User added")}
 function renderUsers(){document.getElementById("users").innerHTML=users.map((u,i)=>`<div class="item"><span><b>${u.name}</b><br><small class="muted">${u.username||""} · ${u.role}</small></span><span><span class="badge good">${u.status}</span> <button class="danger" onclick="removeUser(${i})">Remove</button></span></div>`).join("")}
