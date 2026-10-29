@@ -23,3 +23,32 @@ assert.throws(()=>context.readObjects_(spreadsheet([[...headers,' username ']]),
 const item = context.readObjects_(spreadsheet([['name','qty'],['Bandage',12]]),'Inventory',false)[0];
 assert.equal(item.qty,12);
 console.log('Passed: normalized headers, displayed credentials, exact password text, missing/duplicate columns, missing tabs, numeric inventory.');
+// Password changes must verify the live account and touch only its password cell.
+let accountRows, writes, releases;
+context.ContentService={MimeType:{JSON:'json'},createTextOutput:text=>({setMimeType:()=>JSON.parse(text)})};
+context.LockService={getScriptLock:()=>({waitLock(){},releaseLock(){releases++;}})};
+context.SpreadsheetApp={flush(){},openById:()=>({getSheetByName:()=>({
+  getDataRange:()=>({getDisplayValues:()=>accountRows}),
+  getRange:(row,column,height,width)=>({setNumberFormat:format=>assert.equal(format,'@'),setValues:values=>writes.push({row,column,height,width,values})})
+})})};
+function change(overrides={},rows){
+  accountRows=rows || [headers,['Test','User','old-password','Inventory User','Active'],['Other','other','other-password','Administrator','Active']];
+  writes=[];releases=0;
+  return context.doPost({postData:{contents:JSON.stringify({sheetId:'test',action:'changePassword',username:' USER ',currentPassword:'old-password',newPassword:'new-password',...overrides})}});
+}
+assert.equal(change().ok,true);
+assert.deepEqual(writes.map(write=>[write.row,write.column,write.height,write.width,String(write.values[0][0])]),[[2,3,1,1,'new-password']]);
+assert.equal(releases,1);
+assert.equal(change({newPassword:'=new-password'}).ok,true);
+assert.equal(writes[0].values[0][0],"'=new-password");
+for(const overrides of [{currentPassword:'wrong'},{currentPassword:'OLD-PASSWORD'},{username:'missing'},{newPassword:'short'},{currentPassword:''}]){
+  assert.equal(change(overrides).ok,false);
+  assert.equal(writes.length,0);
+}
+assert.equal(change({},[headers,['Test','User','old-password','Inventory User','Inactive']]).ok,false);
+assert.equal(writes.length,0);
+assert.equal(releases,1);
+assert.equal(change({},[headers,['Test','User','old-password','Inventory User','Active'],['Duplicate','user','old-password','Administrator','Active']]).ok,false);
+assert.equal(writes.length,0);
+assert.equal(context.doGet({parameter:{action:'changePassword'}}).ok,false);
+console.log('Passed: verified password changes, exact credentials, single-cell updates, formula escaping, rejected invalid/inactive/duplicate accounts, POST required.');

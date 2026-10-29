@@ -53,4 +53,8 @@ The existing `getData`, `saveInventory`, and `saveUsers` Apps Script actions are
 
 ## Security notice
 
+Signed-in users can open **My Account** to change their own password by entering their current password and confirming a new password of at least 8 characters. Changes require a connection and are confirmed only after Google Sheets saves them. The backend verifies the current password and active account and updates only that account's password cell.
+
+To enable password changes, copy the updated `EMS_Inventory_Google_Apps_Script.gs` into the spreadsheet's Apps Script project and deploy a **New version** of the existing web app, keeping its deployment URL. Publish the updated `index.html` as well. An older backend reports "Unknown action" until redeployed.
+
 This is a client-side prototype. Account data is stored in the browser, where a technically capable user can inspect it. GitHub Pages cannot provide secure authentication. Do not store sensitive operational data without adding a secure backend and proper access controls.

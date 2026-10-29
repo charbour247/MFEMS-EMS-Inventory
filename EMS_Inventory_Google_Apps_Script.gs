@@ -34,6 +34,30 @@ function doPost(e) {
         return json_({ok:true});
       } finally { lock.releaseLock(); }
     }
+    if (request.action === "changePassword") {
+      const username = String(request.username || "").trim().toLowerCase();
+      const currentPassword = request.currentPassword;
+      const newPassword = request.newPassword;
+      if (!username || typeof currentPassword !== "string" || !currentPassword) throw new Error("Enter your current password.");
+      if (typeof newPassword !== "string" || newPassword.length < 8) throw new Error("Password must have at least 8 characters.");
+      const lock = LockService.getScriptLock();
+      lock.waitLock(30000);
+      try {
+        readObjects_(ss,usersTab,true); // Validate account headers before writing.
+        const sheet = ss.getSheetByName(usersTab);
+        const values = sheet.getDataRange().getDisplayValues();
+        const headers = values[0].map(value=>String(value).trim().toLowerCase());
+        const matches = values.slice(1).map((row,index)=>({row,index})).filter(entry=>String(entry.row[headers.indexOf("username")]).trim().toLowerCase()===username);
+        if (matches.length !== 1 || String(matches[0].row[headers.indexOf("status")]).trim().toLowerCase() !== "active" || matches[0].row[headers.indexOf("password")] !== currentPassword) {
+          throw new Error("Current password is incorrect or account is inactive. Sign in again if your account has changed.");
+        }
+        const cell = sheet.getRange(matches[0].index+2,headers.indexOf("password")+1,1,1);
+        cell.setNumberFormat("@");
+        cell.setValues([[newPassword.startsWith("=") ? "'"+newPassword : newPassword]]);
+        SpreadsheetApp.flush();
+        return json_({ok:true});
+      } finally { lock.releaseLock(); }
+    }
     if (request.action === "ping") return json_({ok:true,spreadsheetName:ss.getName()});
     if (request.action === "getData") return json_({
       ok:true,
@@ -56,6 +80,7 @@ function doPost(e) {
 function doGet(e) {
   const params = e && e.parameter || {};
   if (params.action === "registerUser") return json_({ok:false,error:"Account creation requires POST."});
+  if (params.action === "changePassword") return json_({ok:false,error:"Password changes require POST."});
   if (!params.action) return json_({ok:true,service:"EMS Inventory Google Sheets API"});
   return doPost({postData:{contents:JSON.stringify(params)}});
 }

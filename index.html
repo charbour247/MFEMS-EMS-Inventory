@@ -87,6 +87,7 @@ label{display:block;font-size:13px;font-weight:700;margin:14px 0 7px}input,selec
   <aside class="sidebar">
     <div class="logo"><div class="logo-mark">+</div><div><h1>EMS</h1><span>Inventory</span></div></div>
     <div class="nav">
+      <button data-page="account" onclick="showPage('account')">&#128100; <span>My Account</span></button>
       <button class="active" data-page="dashboard" onclick="showPage('dashboard')">▦ <span>Dashboard</span></button>
       <button data-page="inventory" onclick="showPage('inventory')">▤ <span>Inventory</span></button>
       <button data-page="settings" onclick="showPage('settings')">⚙ <span>Admin Settings</span></button>
@@ -115,6 +116,18 @@ label{display:block;font-size:13px;font-weight:700;margin:14px 0 7px}input,selec
     <section id="inventory" class="page hidden">
       <div class="toolbar"><input id="search" placeholder="Search inventory..." oninput="renderInventory()"><button id="addItemBtn" class="secondary" onclick="addItem()">＋ Add Item</button><button class="secondary" onclick="exportCSV()">Export CSV</button><button class="secondary" onclick="syncFromGoogleSheets()">↻ Sync</button></div>
       <div class="table-wrap"><table class="table"><thead><tr><th>Item</th><th>Category</th><th>Location</th><th>Quantity</th><th>Par Level</th><th>Status</th><th>Barcode</th><th></th></tr></thead><tbody id="inventoryBody"></tbody></table></div>
+    </section>
+
+    <section id="account" class="page hidden">
+      <form class="card" style="max-width:520px" onsubmit="event.preventDefault();void changePassword()">
+        <h3>Change Password</h3>
+        <p class="muted">Enter your current password and choose a new password of at least 8 characters. A connection is required.</p>
+        <label for="accountCurrentPassword">Current password</label><input id="accountCurrentPassword" type="password" autocomplete="current-password" required>
+        <label for="accountNewPassword">New password</label><input id="accountNewPassword" type="password" autocomplete="new-password" minlength="8" required>
+        <label for="accountConfirmPassword">Confirm new password</label><input id="accountConfirmPassword" type="password" autocomplete="new-password" minlength="8" required>
+        <button id="changePasswordButton" class="primary" type="submit">Update Password</button>
+        <p id="accountHint" class="muted" role="status" aria-live="polite"></p>
+      </form>
     </section>
 
     <section id="settings" class="page hidden">
@@ -515,7 +528,42 @@ function applyRolePermissions(){
   if(adminNav) adminNav.classList.toggle("hidden",!isAdmin());
 }
 
-function logout(){stopScanner();currentSessionUser=null;document.getElementById("app").classList.add("hidden");document.getElementById("login").classList.remove("hidden")}
+function clearAccountPasswords(){
+  for(const id of ["accountCurrentPassword","accountNewPassword","accountConfirmPassword"]) document.getElementById(id).value="";
+}
+let passwordChangeInProgress=false;
+async function changePassword(){
+  if(passwordChangeInProgress || !currentSessionUser) return;
+  const hint=document.getElementById("accountHint");
+  const button=document.getElementById("changePasswordButton");
+  const currentPassword=document.getElementById("accountCurrentPassword").value;
+  const newPassword=document.getElementById("accountNewPassword").value;
+  if(!currentPassword){hint.textContent="Enter your current password.";return;}
+  if(newPassword.length<8){hint.textContent="Choose a password with at least 8 characters.";return;}
+  if(newPassword!==document.getElementById("accountConfirmPassword").value){hint.textContent="Passwords do not match.";return;}
+  const session=currentSessionUser;
+  passwordChangeInProgress=true;
+  button.disabled=true;
+  hint.textContent="Updating password...";
+  try{
+    await gsRequest("changePassword",{username:session.username,currentPassword,newPassword});
+    if(currentSessionUser===session){
+      session.password=newPassword;
+      for(const user of users){
+        if(String(user.username??"").trim().toLowerCase()===String(session.username).trim().toLowerCase()) user.password=newPassword;
+      }
+      persistCache();
+      hint.textContent="Password updated. Use your new password next time you sign in.";
+    }
+  }catch(err){
+    if(currentSessionUser===session) hint.textContent="Unable to update password. "+err.message;
+  }finally{
+    clearAccountPasswords();
+    passwordChangeInProgress=false;
+    button.disabled=false;
+  }
+}
+function logout(){stopScanner();clearAccountPasswords();document.getElementById("accountHint").textContent="";currentSessionUser=null;document.getElementById("app").classList.add("hidden");document.getElementById("login").classList.remove("hidden")}
 function showPage(page){if(page==="settings"&&!isAdmin()){toast("Administrator access required");return;}document.querySelectorAll(".page").forEach(p=>p.classList.add("hidden"));document.getElementById(page).classList.remove("hidden");document.querySelectorAll(".nav button").forEach(b=>b.classList.toggle("active",b.dataset.page===page));document.getElementById("pageTitle").textContent=page==="settings"?"Admin Settings":page[0].toUpperCase()+page.slice(1);if(page==="inventory")renderInventory();if(page==="settings"){renderUsers();loadGoogleSheetsSettingsUI()}}
 function renderAll(){document.getElementById("totalItems").textContent=inventory.length;document.getElementById("totalUnits").textContent=inventory.reduce((a,i)=>a+i.qty,0);document.getElementById("lowCount").textContent=inventory.filter(i=>i.qty<=i.par).length;document.getElementById("userCount").textContent=users.length;document.getElementById("frequent").innerHTML=[...inventory].sort((a,b)=>b.used-a.used).slice(0,5).map(i=>`<div class="item"><span>${i.name}<br><small class="muted">${i.used} uses</small></span><b>${i.qty}</b></div>`).join("");let low=inventory.filter(i=>i.qty<=i.par).sort((a,b)=>a.qty-b.qty);document.getElementById("lowStock").innerHTML=low.length?low.map(i=>`<div class="item"><span>${i.name}<br><small class="muted">Par ${i.par}</small></span><span class="badge low">${i.qty} left</span></div>`).join(""):`<p class="muted">No low-stock items.</p>`}
 function renderInventory(){
