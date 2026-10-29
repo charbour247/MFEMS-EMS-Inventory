@@ -51,6 +51,19 @@ Run the cache regression checks with `node tests/cache-regression.js`. These sim
 
 The existing `getData`, `saveInventory`, and `saveUsers` Apps Script actions are unchanged. Requests still transfer full datasets; the speed improvement is immediate local display and editing. The current API replaces whole datasets, so concurrent edits from multiple devices can still overwrite each other. Server-side versions or per-record updates would be needed to resolve those conflicts.
 
+## Low-stock email alerts
+
+Alerts are configured in `LOW_STOCK_EMAIL` in `EMS_Inventory_Google_Apps_Script.gs` for **dfoley@martinsvilleva.gov**, the app's existing spreadsheet, and the **Inventory** tab.
+
+1. Open the spreadsheet, then **Extensions > Apps Script**. Replace the backend code with the updated `EMS_Inventory_Google_Apps_Script.gs` and save.
+2. Select **setupLowStockAlerts** in the function dropdown and click **Run**. Approve spreadsheet and email permissions using the Google account that should send the alerts. This creates a five-minute timer; running setup again from the same account does not add another timer.
+3. Select **checkLowStockAlerts** and click **Run** for the first check. This sends a real email if any items are already below par. Check the recipient inbox and Apps Script **Executions** for errors.
+4. Deploy a **New version** of the existing web app, keeping its URL, with **Execute as: Me** using the account that authorized email. This activates the email check directly in the backend's inventory save. The timer itself uses the saved editor code.
+
+The checker groups newly low items into one email with names, locations, quantities, par levels, barcodes, and a spreadsheet link. It uses strictly **quantity < par**; the app's visual LOW status also includes equality. An item gets one alert while it remains low. After a check observes it at or above par, a later drop can generate another alert. The first check alerts for all items already below par. Restocking and dropping again entirely between checks cannot be detected. Every inventory row must have a unique barcode and numeric quantity/par values. Invalid data fails the check without resetting alert history.
+
+The backend checks for alerts immediately after each successful inventory save, including stock changes and par edits. Direct sheet edits are detected by the five-minute backup timer; unsynced device edits cannot generate an alert yet. Both paths share alert history to prevent repeat emails. If an email fails, the inventory save still succeeds, the error appears in Apps Script Executions, and the timer can retry. No spreadsheet On edit trigger is needed. Email is sent under the executing Google account and is subject to its Apps Script email quota. Only one account should run setup. Deleting the **checkLowStockAlerts** timer stops backup checks; save-triggered alerts remain active in the deployed backend.
+
 ## Security notice
 
 Signed-in users can open **My Account** to change their own password by entering their current password and confirming a new password of at least 8 characters. Changes require a connection and are confirmed only after Google Sheets saves them. The backend verifies the current password and active account and updates only that account's password cell.

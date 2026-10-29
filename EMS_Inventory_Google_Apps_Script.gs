@@ -1,4 +1,66 @@
 /** EMS Inventory Google Sheets backend. Deploy as a Web App after editing. */
+const LOW_STOCK_EMAIL = {
+  recipient:"dfoley@martinsvilleva.gov",
+  sheetId:"1HNm7G6D82PjMFFK1AjRqp57Sfc_SnCuWuIj0dT15vu0",
+  inventoryTab:"Inventory"
+};
+
+// Run once from the Apps Script editor as the account that should send alerts.
+function setupLowStockAlerts() {
+  SpreadsheetApp.openById(LOW_STOCK_EMAIL.sheetId);
+  MailApp.getRemainingDailyQuota(); // Request email authorization before the timer runs.
+  const existing = ScriptApp.getProjectTriggers().filter(trigger=>trigger.getHandlerFunction()==="checkLowStockAlerts");
+  if (!existing.length) ScriptApp.newTrigger("checkLowStockAlerts").timeBased().everyMinutes(5).create();
+}
+
+function checkLowStockAlerts() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    sendLowStockAlerts_(SpreadsheetApp.openById(LOW_STOCK_EMAIL.sheetId));
+  } finally { lock.releaseLock(); }
+}
+
+// Caller holds the script lock so saves and timer checks share alert history safely.
+function sendLowStockAlerts_(ss) {
+    const config = LOW_STOCK_EMAIL;
+    const sheet = ss.getSheetByName(config.inventoryTab);
+    if (!sheet) throw new Error("Missing inventory tab: "+config.inventoryTab);
+    const values = sheet.getDataRange().getValues();
+    const headers = values[0].map(value=>String(value).trim().toLowerCase());
+    for (const header of ["name","loc","qty","par","barcode"]) {
+      if (headers.indexOf(header)<0 || headers.indexOf(header)!==headers.lastIndexOf(header)) throw new Error("Inventory requires one column named "+header);
+    }
+    const items = readObjects_(ss,config.inventoryTab,false);
+    const prefix = "lowStockAlert:"+config.sheetId+":"+config.inventoryTab+":";
+    const store = PropertiesService.getScriptProperties();
+    const previous = store.getProperties();
+    const low = new Map();
+    const barcodes = new Set();
+    for (const item of items) {
+      const barcode = String(item.barcode??"").trim();
+      if (!barcode || barcodes.has(barcode)) throw new Error("Each inventory item needs a unique barcode for low-stock alerts.");
+      barcodes.add(barcode);
+      if (String(item.qty??"").trim()==="" || String(item.par??"").trim()==="" || !Number.isFinite(Number(item.qty)) || !Number.isFinite(Number(item.par))) throw new Error("Invalid quantity or par level for "+barcode);
+      if (Number(item.qty)<Number(item.par)) low.set(prefix+barcode,item);
+    }
+    const newlyLow = [...low].filter(([key])=>!previous[key]);
+    if (newlyLow.length) {
+      MailApp.sendEmail({
+        to:config.recipient,
+        subject:"MFEMS Inventory: "+newlyLow.length+" item(s) below par",
+        body:"The following inventory is below par:\n\n"+newlyLow.map(([,item])=>
+          String(item.name)+"\nLocation: "+String(item.loc||"Unspecified")+"\nQuantity: "+item.qty+" | Par: "+item.par+"\nBarcode: "+item.barcode
+        ).join("\n\n")+"\n\nSpreadsheet: https://docs.google.com/spreadsheets/d/"+config.sheetId+"/edit\n\nItems are checked after inventory saves and approximately every five minutes. Another alert is enabled after a check observes the item at or above par."
+      });
+      // Record only after sending succeeds, so failures can retry on the next check.
+      for (const [key] of newlyLow) store.setProperty(key,"sent");
+    }
+    for (const key of Object.keys(previous)) {
+      if (key.startsWith(prefix) && !low.has(key)) store.deleteProperty(key);
+    }
+}
+
 function doPost(e) {
   try {
     const request = JSON.parse(e && e.postData && e.postData.contents || "{}");
@@ -65,8 +127,21 @@ function doPost(e) {
       users:readObjects_(ss,usersTab,true)
     });
     if (request.action === "saveInventory") {
-      writeObjects_(ss,inventoryTab,["name","cat","loc","qty","par","used","barcode"],request.inventory || []);
-      return json_({ok:true});
+      const lock = LockService.getScriptLock();
+      lock.waitLock(30000);
+      try {
+        writeObjects_(ss,inventoryTab,["name","cat","loc","qty","par","used","barcode"],request.inventory || []);
+        SpreadsheetApp.flush();
+        if (request.sheetId===LOW_STOCK_EMAIL.sheetId && inventoryTab===LOW_STOCK_EMAIL.inventoryTab) {
+          try {
+            sendLowStockAlerts_(ss);
+          } catch (err) {
+            // Inventory is already saved. Keep the save successful; the timer retries email.
+            console.error("Low-stock notification failed: "+String(err && err.message || err));
+          }
+        }
+        return json_({ok:true});
+      } finally { lock.releaseLock(); }
     }
     if (request.action === "saveUsers") {
       writeObjects_(ss,usersTab,["name","username","password","role","status"],request.users || []);
