@@ -41,7 +41,7 @@ Every sign-in still reads current accounts from the Users tab (`name`, `username
 
 The app displays locally cached inventory immediately after sign-in, then refreshes it from the existing Apps Script endpoint. Inventory and user changes are saved to a device cache before uploading. Failed uploads remain pending across page reloads and retry on sign-in, reconnect, window focus, or every 60 seconds while the app is visible. The Sync button also starts a retry and refresh. A status message shows whether data is synced or waiting.
 
-Administrators can edit item names directly in the inventory table and change categories from a dropdown. Existing category choices come from categories currently assigned to inventory items; select **Add category...** to create a new choice while assigning it. These edits use the existing inventory save and sync flow.
+Administrators can edit item names and par levels directly in the inventory table and change categories from a dropdown. Par levels accept whole numbers of zero or more; changing a par level immediately refreshes low-stock indicators and saves through the existing device cache and Google Sheets sync flow. Other users see read-only par levels. Existing category choices come from categories currently assigned to inventory items; select **Add category...** to create a new choice while assigning it. These edits use the existing inventory save and sync flow.
 
 Caches are separated by spreadsheet and tab names. Browser storage must be available to retain data after closing the page. This caches data only; it does not make the page or camera library available offline on a first visit.
 

@@ -22,7 +22,7 @@ async function runCacheRegressionTests(source){
       return {login,sync:syncFromGoogleSheets,apply:applyServerData,key:cacheKey,renderInventory,adjust,exportCSV,
         setRole:role=>{currentSessionUser={role}},
         setSyncEnabled:enabled=>{gsSettings.enabled=enabled},
-        updateName:updateItemName,updateCategory:updateItemCategory,
+        updateName:updateItemName,updateCategory:updateItemCategory,updatePar:updateItemPar,
         snapshot:()=>({inventory,users,pending,lastSync,storageAvailable,currentSessionUser}),
         edit:()=>{gsSettings.enabled=false;inventory[0].qty=41;saveInventoryToDatabase();}};
     `)(storage,document,{addEventListener(){}},fetch,()=>1,()=>{},()=>1,class{abort(){}},message=>{throw new Error(message);},()=>{prompts++;return "99";},{createObjectURL:blob=>{downloads.push(blob.parts.join(""));return "blob:test";}},class{constructor(parts){this.parts=parts;}});
@@ -42,6 +42,8 @@ async function runCacheRegressionTests(source){
   assert(!first.element("inventoryBody").innerHTML.includes(">Adjust</button>"),"Non-admins must not see inventory adjustment controls");
   assert(!first.element("inventoryBody").innerHTML.includes("<select") && !first.element("inventoryBody").innerHTML.includes("name-editor"),"Non-admins must not see editable inventory fields");
   await first.adjust(0);
+  await first.updatePar(0,"100");
+  assert(first.snapshot().inventory[0].par===5 && !first.element("inventoryBody").innerHTML.includes("par-editor"),"Non-admins must not edit par levels or see par controls");
   assert(first.snapshot().inventory[0].qty===42 && first.prompts()===0,"Non-admin inventory adjustment calls must not change quantity or prompt for input");
   const editorStorage=createStore();
   const editor=open(editorStorage,false,{...data,inventory:[{...data.inventory[0],cat:"Supplies"}]});
@@ -55,6 +57,17 @@ async function runCacheRegressionTests(source){
   await editor.updateCategory(0,"__add_new_category__");
   assert(editor.snapshot().inventory[0].name==="Updated item" && editor.snapshot().inventory[0].cat==="99","Admin item name and new category edits must update inventory");
   assert(JSON.parse(editorStorage.getItem(editor.key())).inventory[0].cat==="99" && editor.snapshot().pending.inventory,"Admin inventory edits must persist locally and queue for sync");
+  assert(editor.element("inventoryBody").innerHTML.includes("par-editor"),"Admins must see par level controls");
+  await editor.updatePar(0,"42");
+  assert(editor.snapshot().inventory[0].par===42 && editor.element("lowCount").textContent==1,"Changing par must immediately refresh low-stock counts");
+  assert(editor.element("inventoryBody").innerHTML.includes(">LOW</span>"),"Changing par must refresh inventory status");
+  assert(JSON.parse(editorStorage.getItem(editor.key())).inventory[0].par===42 && editor.snapshot().pending.inventory,"Par changes must persist and queue for sync");
+  for(const invalid of ["", " ", "-1", "1.5", "NaN", "Infinity"]){
+    await editor.updatePar(0,invalid);
+    assert(editor.snapshot().inventory[0].par===42,"Invalid par must leave inventory unchanged");
+  }
+  await editor.updatePar(0,"0");
+  assert(editor.snapshot().inventory[0].par===0 && editor.element("lowCount").textContent==0,"Zero is a valid par level and must refresh low-stock counts");
   first.setRole("Administrator");
   first.snapshot().inventory[0].name='Bandage, "sterile"';
   first.exportCSV();

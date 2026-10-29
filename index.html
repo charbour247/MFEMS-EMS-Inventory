@@ -579,8 +579,28 @@ function renderInventory(){
     const categoryCell=isAdmin()
       ?`<select aria-label="Category" onchange="updateItemCategory(${index},this.value)">${category? "":'<option value="" selected>Uncategorized</option>'}${categories.map(value=>`<option value="${escapeHtml(value)}"${value===category?" selected":""}>${escapeHtml(value)}</option>`).join("")}<option value="__add_new_category__">＋ Add category...</option></select>`
       :escapeHtml(category);
-    return `<tr><td>${nameCell}</td><td>${categoryCell}</td><td>${escapeHtml(item.loc)}</td><td class="qty">${escapeHtml(item.qty)}</td><td>${escapeHtml(item.par)}</td><td><span class="badge ${item.qty<=item.par?'low':'good'}">${item.qty<=item.par?'LOW':'OK'}</span></td><td>${escapeHtml(item.barcode)}</td><td>${isAdmin()?`<button class="secondary" onclick="adjust(${index})">Adjust</button>`:""}</td></tr>`;
+    const parCell=isAdmin()
+      ?`<input class="par-editor" type="number" min="0" step="1" aria-label="Par level" value="${escapeHtml(item.par)}" onchange="updateItemPar(${index},this.value)">`
+      :escapeHtml(item.par);
+    return `<tr><td>${nameCell}</td><td>${categoryCell}</td><td>${escapeHtml(item.loc)}</td><td class="qty">${escapeHtml(item.qty)}</td><td>${parCell}</td><td><span class="badge ${item.qty<=item.par?'low':'good'}">${item.qty<=item.par?'LOW':'OK'}</span></td><td>${escapeHtml(item.barcode)}</td><td>${isAdmin()?`<button class="secondary" onclick="adjust(${index})">Adjust</button>`:""}</td></tr>`;
   }).join("");
+}
+async function updateItemPar(index,value){
+  if(!isAdmin()){toast("Administrator access required");return;}
+  const item=inventory[index];
+  if(!item) return;
+  const text=String(value??"").trim();
+  const par=Number(text);
+  if(!text || !Number.isSafeInteger(par) || par<0){
+    toast("Par level must be a whole number of zero or more");
+    renderInventory();
+    return;
+  }
+  if(par===item.par) return;
+  item.par=par;
+  renderAll();renderInventory();
+  await saveInventoryToDatabase();
+  toast("Par level updated");
 }
 async function updateItemName(index,value){
   if(!isAdmin()){toast("Administrator access required");return;}
